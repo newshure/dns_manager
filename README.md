@@ -2,7 +2,7 @@
 
 BIND 9 zone 파일 편집기 겸 configurator. **Windows Server DNS Manager(MMC) 의 조작 흐름**을 웹으로 옮겨, 레코드를 테이블에서 보고 편집하고 zone·전달자를 추가한다.
 
-- 대상: BIND 9 호스트 (vanilla, systemd). **RedHat 계열(Rocky/RHEL/CentOS)과 Debian 계열(Debian/Ubuntu)의 설정 배치를 자동 감지**하며, 다른 배치는 Settings 에서 직접 입력한다
+- 대상: BIND 9 호스트. **RedHat 계열(Rocky/RHEL/CentOS)과 Debian 계열(Debian/Ubuntu)의 설정 배치를 자동 감지**하며, 다른 배치는 Settings 에서 직접 입력한다
 - 제어 경로: zone 파일 직접 편집 + `rndc`. **동적 갱신(`allow-update`)이 걸린 zone 은 RFC 2136 으로 자동 전환** — 이런 zone 의 파일을 직접 고치면 journal 과 어긋난다
 - 사용 설명서: [docs/manual/usage.md](docs/manual/usage.md)
 
@@ -119,13 +119,21 @@ root 로 zone 파일을 고치지만 **named 가 읽지 못하게 되는 일은 
 
 폐쇄망 컨테이너 검증에서 소유권 보존과 동적 갱신 동작을 매번 확인합니다.
 
-### systemd 로 돌리고 싶다면
-
-`deploy/systemd/dns-manager.service` 가 들어 있습니다(설치 스크립트는 등록하지 않습니다). 경로만 맞춰 복사해 쓰세요.
-
 ## 운영 방식
 
-필요할 때만 띄우는 **온디맨드 도구**다. 수신은 `0.0.0.0:8100`, 폐쇄망 내부 사용 전제로 앱 자체 인증은 두지 않는다.
+**필요할 때만 띄우고 작업이 끝나면 내리는 도구다.** 서비스로 등록하지 않는다.
+
+```
+.run 실행 → 설치 → dns_manager start → 브라우저에서 작업 → dns_manager stop
+```
+
+앱 자체에 인증이 없다. 그래서 상시 구동을 전제하지 않는다 — 작업 시간 동안만 띄우는 것이
+맞다. 띄워 둔 채 잊지 않도록 **유휴 자동 종료**를 쓸 수 있다:
+
+```bash
+dns_manager start --shutdown-after 30m   # 30분간 요청이 없으면 스스로 종료
+dns_manager run                          # 전면 실행 — 작업 끝나면 Ctrl+C
+```
 
 ## 개발
 

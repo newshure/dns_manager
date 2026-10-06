@@ -825,6 +825,19 @@ async function refresh() {
     state.zones = zones;
     state.forwarders = forwarders;
 
+    // 자동 종료가 켜져 있으면 남은 시간을 보여 준다. 작업 중에 갑자기 끊기면 당황스럽다.
+    const idleNote = el("idle-note");
+    if (status.shutdown_after_idle > 0 && status.idle_remaining !== null) {
+      const minutes = Math.ceil(status.idle_remaining / 60);
+      idleNote.textContent = `유휴 ${minutes}분 후 자동 종료`;
+      idleNote.classList.remove("hidden");
+      idleNote.title =
+        "인증이 없는 도구라 작업 시간 동안만 띄우는 것이 전제입니다. " +
+        "화면을 쓰면 시간이 다시 채워집니다.";
+    } else {
+      idleNote.classList.add("hidden");
+    }
+
     el("server-state").innerHTML = status.running
       ? `<span class="up">named 실행 중</span> · ${esc(status.version ?? "")} · ${status.zone_count} zones`
       : `<span class="down">named 응답 없음</span>`;

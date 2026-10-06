@@ -261,3 +261,10 @@ body.busy::after {
   background: var(--accent); color: #fff; padding: 4px 12px;
   border-radius: 3px; font-size: 12px;
 }
+
+/* 유휴 자동 종료 안내 */
+.idle-note {
+  font-size: 11.5px; color: #7a5300; background: var(--warn-bg);
+  border: 1px solid var(--warn-line); border-radius: 3px; padding: 2px 8px;
+}
+.idle-note.hidden { display: none; }

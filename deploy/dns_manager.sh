@@ -19,6 +19,7 @@ ARGS_FILE="${RUN_DIR}/last-args"
 
 HOST=""
 PORT=""
+SHUTDOWN_AFTER=""
 WAIT_SECONDS="${DNS_MANAGER_WAIT:-20}"
 ORIGINAL_ARGS=("$@")
 
@@ -27,8 +28,9 @@ usage() {
 dns_manager — BIND 9 zone 편집기
 
 사용법:
-  dns_manager start   [--host 0.0.0.0] [--port 8100]   백그라운드로 기동
+  dns_manager start   [--host 0.0.0.0] [--port 8100] [--shutdown-after 30m]
   dns_manager stop                                     정지
+                                                       백그라운드로 기동
   dns_manager restart [--host ...] [--port ...]        재기동 (인자 없으면 직전 값 사용)
   dns_manager status                                   상태 확인
   dns_manager run     [--host ...] [--port ...]        전면 실행 (Ctrl+C 로 종료)
@@ -42,6 +44,9 @@ root 로 동작합니다. 일반 계정으로 실행하면 sudo 로 자동 전�
 로그      : ${LOG_FILE}
 
 host/port 를 주지 않으면 설정 파일의 값을 씁니다(기본 0.0.0.0:8100).
+
+이 도구에는 인증이 없습니다. 서비스로 등록하지 않고, 작업하는 동안만 띄우는 것이 맞습니다.
+  --shutdown-after 30m   요청이 30분간 없으면 스스로 종료 (30m, 2h, 90s 형식)
 USAGE
 }
 
@@ -65,6 +70,8 @@ parse_options() {
       --host=*) HOST="${1#*=}" ;;
       --port=*) PORT="${1#*=}" ;;
       --config) shift; CONFIG="${1:-}" ;;
+      --shutdown-after) shift; SHUTDOWN_AFTER="${1:-}" ;;
+      --shutdown-after=*) SHUTDOWN_AFTER="${1#*=}" ;;
       -h|--help) usage; exit 0 ;;
       *) die "알 수 없는 옵션: $1" ;;
     esac
@@ -77,6 +84,7 @@ app_args() {
   [[ -f "${CONFIG}" ]] && args+=(--config "${CONFIG}")
   [[ -n "${HOST}" ]] && args+=(--host "${HOST}")
   [[ -n "${PORT}" ]] && args+=(--port "${PORT}")
+  [[ -n "${SHUTDOWN_AFTER}" ]] && args+=(--shutdown-after "${SHUTDOWN_AFTER}")
   printf '%s\n' "${args[@]:-}"
 }
 
@@ -143,7 +151,8 @@ cmd_start() {
 
   resolve_endpoint
   mkdir -p "${RUN_DIR}" "$(dirname "${LOG_FILE}")"
-  printf 'HOST=%s\nPORT=%s\nCONFIG=%s\n' "${HOST}" "${PORT}" "${CONFIG}" > "${ARGS_FILE}"
+  printf 'HOST=%s\nPORT=%s\nCONFIG=%s\nSHUTDOWN_AFTER=%s\n' \
+    "${HOST}" "${PORT}" "${CONFIG}" "${SHUTDOWN_AFTER}" > "${ARGS_FILE}"
 
   local args=()
   mapfile -t args < <(app_args)
@@ -160,6 +169,11 @@ cmd_start() {
     if probe "${url}"; then
       echo "기동했습니다: ${HOST}:${PORT} (pid ${pid})"
       echo "  로그: ${LOG_FILE}"
+      if [[ -n "${SHUTDOWN_AFTER}" ]]; then
+        echo "  요청이 ${SHUTDOWN_AFTER} 동안 없으면 스스로 종료합니다."
+      else
+        echo "  인증이 없는 도구입니다. 작업이 끝나면 dns_manager stop 으로 내리세요."
+      fi
       return 0
     fi
     kill -0 "${pid}" 2>/dev/null || break
@@ -218,6 +232,8 @@ cmd_status() {
       return 1
     fi
   else
+    # 스스로 종료했으면 PID 파일만 남는다. 치워 둔다.
+    [[ -f "${PID_FILE}" ]] && rm -f "${PID_FILE}"
     echo "실행 중이 아닙니다."
     return 1
   fi

@@ -471,3 +471,77 @@ def test_rndc_last_loaded_is_parsed():
     )
     match = server_mod._LOADED_RE.search(output)
     assert match and "Fri, 02 Oct 2026" in match.group(1)
+
+
+def test_status_reports_idle_shutdown(tmp_path, zones_dir):
+    """자동 종료가 켜져 있으면 남은 시간을 알려 준다(화면에 띄우기 위해)."""
+    from fastapi.testclient import TestClient
+
+    from dns_manager.api.app import create_app
+    from dns_manager.config import AppConfig, BindConfig, Config
+
+    cfg = Config(
+        bind=BindConfig(named_conf=tmp_path / "named.conf"),
+        app=AppConfig(state_dir=tmp_path, backup_dir=tmp_path, shutdown_after_idle=1800),
+    )
+    with TestClient(create_app(cfg)) as client:
+        body = client.get("/api/status").json()
+        assert body["shutdown_after_idle"] == 1800
+        assert body["idle_remaining"] is not None
+        assert 0 < body["idle_remaining"] <= 1800
+
+
+def test_status_without_idle_shutdown(client: TestClient):
+    body = client.get("/api/status").json()
+    assert body["shutdown_after_idle"] == 0
+    assert body["idle_remaining"] is None
+
+
+def test_requests_reset_the_idle_clock(tmp_path, zones_dir):
+    """요청이 오면 유휴 시계가 되돌아가야 한다. 작업 중에 종료되면 안 된다."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from dns_manager.api.app import create_app
+    from dns_manager.config import AppConfig, BindConfig, Config
+
+    cfg = Config(
+        bind=BindConfig(named_conf=tmp_path / "named.conf"),
+        app=AppConfig(state_dir=tmp_path, backup_dir=tmp_path, shutdown_after_idle=60),
+    )
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        client.get("/api/status")
+        first = app.state.idle.idle_seconds
+        time.sleep(0.05)
+        assert app.state.idle.idle_seconds > first
+        client.get("/api/status")
+        assert app.state.idle.idle_seconds < first + 0.05
+
+
+def test_healthz_does_not_reset_idle_clock(tmp_path, zones_dir):
+    """살아 있는지 묻는 것은 작업이 아니다.
+
+    이것까지 활동으로 세면 상태 확인 루프가 자동 종료를 영원히 막는다(실제로 겪었다).
+    """
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from dns_manager.api.app import create_app
+    from dns_manager.config import AppConfig, BindConfig, Config
+
+    cfg = Config(
+        bind=BindConfig(named_conf=tmp_path / "named.conf"),
+        app=AppConfig(state_dir=tmp_path, backup_dir=tmp_path, shutdown_after_idle=60),
+    )
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        time.sleep(0.05)
+        before = app.state.idle.idle_seconds
+        client.get("/healthz")
+        assert app.state.idle.idle_seconds >= before, "healthz 는 시계를 되돌리면 안 된다"
+
+        client.get("/api/status")
+        assert app.state.idle.idle_seconds < before, "실제 작업은 시계를 되돌려야 한다"

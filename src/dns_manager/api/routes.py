@@ -86,6 +86,13 @@ def get_status(request: Request) -> ServerStatusOut:
         server_forwarders=server_forwarders,
         server_forward_policy=server_forward_policy,
         advanced_view_default=cfg.app.advanced_view_default,
+        shutdown_after_idle=cfg.app.shutdown_after_idle,
+        idle_remaining=(
+            int(getattr(request.app.state, "idle").remaining)
+            if getattr(request.app.state, "idle", None) is not None
+            and request.app.state.idle.timeout > 0
+            else None
+        ),
         config_source=str(cfg.source) if cfg.source else None,
     )
 

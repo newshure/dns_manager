@@ -60,6 +60,10 @@ class AppConfig:
     backup_dir: Path = Path("/var/lib/dns-manager/backups")
     # 보기 기본값: Windows DNS Manager 의 View ▸ Advanced 에 해당
     advanced_view_default: bool = False
+    # 유휴 자동 종료(초). 0 이면 쓰지 않는다.
+    # 이 앱에는 인증이 없다. 작업이 끝났는데 띄워 둔 채 잊으면 그 포트에 닿는 누구나
+    # DNS 를 고칠 수 있다. 스스로 내려가게 해 두는 편이 안전하다.
+    shutdown_after_idle: int = 0
 
 
 @dataclass(frozen=True)
