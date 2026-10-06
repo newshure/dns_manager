@@ -1,0 +1,34 @@
+# dns_manager 설정 예제 — /etc/dns-manager/config.toml 로 복사해 사용
+# 환경변수로도 덮어쓸 수 있다: DNS_MANAGER_BIND_<KEY>, DNS_MANAGER_APP_<KEY>
+
+[bind]
+# 경로를 비워 두면 설치된 레이아웃을 자동으로 감지한다.
+#   RedHat 계열: /etc/named.conf · /etc/named/zones.conf · /var/named
+#   Debian 계열: /etc/bind/named.conf · /etc/bind/named.conf.local · /var/cache/bind
+# 자동 감지가 맞지 않으면 아래 주석을 풀어 직접 지정하거나, 앱의 Settings 화면에서 입력한다.
+# named_conf = "/etc/named.conf"
+# zones_conf = "/etc/named/zones.conf"
+# zone_dir = "/var/named"
+# chroot = "/var/named/chroot"
+
+# zone 파일 확장자 규칙 (New Zone 마법사의 기본 파일명)
+zone_suffix = ".zone"      # 정방향
+reverse_suffix = ".rev"    # 역방향
+
+named_checkconf = "named-checkconf"
+named_checkzone = "named-checkzone"
+rndc = "rndc"
+# rndc_key = "/etc/rndc.key"
+dig = "dig"
+command_timeout = 20.0
+
+[app]
+# 전 인터페이스 수신. 앱 자체에는 인증이 없으므로 방화벽(firewalld)이나
+# 앞단 역방향 프록시(인증·TLS)로 접근 범위를 반드시 통제한다.
+host = "0.0.0.0"
+port = 8100
+user_header = "X-Forwarded-User"
+state_dir = "/var/lib/dns-manager"
+backup_dir = "/var/lib/dns-manager/backups"
+# Windows DNS Manager 의 View ▸ Advanced 기본 상태
+advanced_view_default = false

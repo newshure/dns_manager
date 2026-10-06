@@ -1,0 +1,15 @@
+; 테스트용 정방향 zone
+$TTL 3600
+@       IN  SOA ns1.example.local. admin.example.local. (
+                2026100101 3600 600 604800 3600 )
+@           IN  NS      ns1.example.local.
+@           IN  MX  20  mail.example.local.
+ns1         IN  A       192.168.10.10
+www         IN  A       192.168.10.21
+www         IN  AAAA    fd00:dead:beef::21
+mail        IN  A       192.168.10.25
+mail2       IN  CNAME   mail.example.local.
+api     300 IN  A       192.168.10.31
+@           IN  TXT     "v=spf1 mx -all"
+_sip._tcp   IN  SRV 0 0 5060 sipserver1.example.local.
+@           IN  CAA 0 issue "letsencrypt.org"

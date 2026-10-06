@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dns-manager"
+version = "0.1.3"
+description = "BIND 9 zone editor and configurator with a Windows DNS Manager style console"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+authors = [{ name = "haedong" }]
+urls = { Homepage = "https://theknowledges.net", Source = "https://github.com/newshure/dns_manager" }
+dependencies = [
+    "dnspython>=2.6",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "jinja2>=3.1",
+    "python-multipart>=0.0.9",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "httpx>=0.27"]
+
+[project.scripts]
+dns-manager = "dns_manager.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+dns_manager = ["web/templates/*.html", "web/static/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

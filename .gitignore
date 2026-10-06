@@ -1,0 +1,31 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+temp/
+dist/
+build/
+.cache/
+
+# 시크릿·키 차단
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+secrets/
+kubeconfig
+
+# 로컬 설정·상태
+config.local.toml
+*.sqlite3
+backups/
+run/
+log/
+
+# 개발 기록은 저장소에 두지 않는다. 사용 설명서만 둔다.
+# (디렉터리 자체를 제외하면 하위 예외가 먹지 않으므로 docs/* 로 적는다)
+docs/*
+!docs/manual/

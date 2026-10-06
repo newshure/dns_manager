@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dns_manager</title>
+<link rel="stylesheet" href="/static/console.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Ctext y='13' font-size='13'%3E%F0%9F%97%82%3C/text%3E%3C/svg%3E">
+</head>
+<body data-advanced-default="{{ 'true' if advanced_default else 'false' }}">
+
+<header class="toolbar">
+  <div class="brand">dns_manager <span class="ver">{{ version }}</span></div>
+  <nav class="menu">
+    <label class="chk"><input type="checkbox" id="advanced-view"> View ▸ Advanced</label>
+    <button type="button" id="btn-refresh" title="새로 고침">⟳ Refresh</button>
+    <button type="button" id="btn-lookup" title="실제 응답 확인 (dig)">Launch nslookup</button>
+  </nav>
+  <div class="server-state" id="server-state">상태 확인 중…</div>
+</header>
+
+<div id="banner" class="banner hidden"></div>
+
+<main class="console">
+  <!-- 좌: 콘솔 트리 -->
+  <aside class="tree-pane">
+    <ul class="tree" id="tree"><li class="loading">불러오는 중…</li></ul>
+  </aside>
+
+  <div class="splitter"></div>
+
+  <!-- 우: 상세 -->
+  <section class="detail-pane">
+    <div class="detail-header">
+      <h1 id="detail-title">DNS</h1>
+      <div class="tabs" id="tabs"></div>
+    </div>
+    <div class="detail-actions" id="detail-actions"></div>
+    <div class="detail-body" id="detail-body"></div>
+  </section>
+</main>
+
+<div class="statusbar">
+  <span id="statusbar"></span>
+  <span class="copyright">
+    © 2026 haedong · 출처: <a href="https://theknowledges.net" target="_blank" rel="noreferrer">theknowledges.net</a>
+    · MIT License · <button type="button" id="btn-notice" class="link">제3자 고지</button>
+  </span>
+</div>
+
+<!-- 모달: 네이티브 dialog 를 쓰지 않고 직접 구성한다 -->
+<div class="modal-overlay hidden" id="modal-overlay" role="presentation">
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-head">
+      <h2 id="modal-title"></h2>
+      <button type="button" class="modal-x" id="modal-close" aria-label="닫기">×</button>
+    </div>
+    <form id="modal-form" autocomplete="off">
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-foot" id="modal-foot"></div>
+    </form>
+  </div>
+</div>
+
+<script src="/static/console.js"></script>
+</body>
+</html>
