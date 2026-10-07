@@ -178,7 +178,9 @@ cat "${PAYLOAD}" >> "${TARGET}"
 chmod +x "${TARGET}"
 rm -f "${PAYLOAD}"
 
-sha256sum "${TARGET}" > "${TARGET}.sha256"
+# 파일 이름만 적는다. 빌드 서버의 절대 경로를 적으면 받는 쪽에서 `sha256sum -c` 가
+# "그런 파일 없음" 으로 실패한다 — 배포물은 받는 사람의 디렉터리에서 검증돼야 한다.
+(cd "$(dirname "${TARGET}")" && sha256sum "$(basename "${TARGET}")" > "$(basename "${TARGET}").sha256")
 
 echo
 echo "완성: ${TARGET}"
