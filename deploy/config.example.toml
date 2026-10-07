@@ -32,3 +32,10 @@ state_dir = "/var/lib/dns-manager"
 backup_dir = "/var/lib/dns-manager/backups"
 # Windows DNS Manager 의 View ▸ Advanced 기본 상태
 advanced_view_default = false
+
+# 유휴 자동 종료(초). 기본 10분.
+# 이 앱에는 인증이 없다. 작업이 끝났는데 띄워 둔 채 잊으면 그 포트에 닿는 누구나
+# DNS 를 고칠 수 있으므로 스스로 내려가게 둔다.
+# 화면에서 뭔가 할 때마다(이동·추가·삭제·새로 고침) 시간이 다시 채워진다.
+# 0 으로 두면 끄지만, 권하지 않는다.
+shutdown_after_idle = 600

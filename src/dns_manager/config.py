@@ -62,8 +62,10 @@ class AppConfig:
     advanced_view_default: bool = False
     # 유휴 자동 종료(초). 0 이면 쓰지 않는다.
     # 이 앱에는 인증이 없다. 작업이 끝났는데 띄워 둔 채 잊으면 그 포트에 닿는 누구나
-    # DNS 를 고칠 수 있다. 스스로 내려가게 해 두는 편이 안전하다.
-    shutdown_after_idle: int = 0
+    # DNS 를 고칠 수 있다. 그래서 기본값을 켜 둔다.
+    # 화면에서 뭔가 하면(페이지 이동, 추가·삭제 등) 시간이 다시 채워진다.
+    # 마우스 이동처럼 서버에 아무것도 묻지 않는 동작은 세지 않는다.
+    shutdown_after_idle: int = 600
 
 
 @dataclass(frozen=True)

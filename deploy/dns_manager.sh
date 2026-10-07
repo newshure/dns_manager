@@ -28,7 +28,7 @@ usage() {
 dns_manager — BIND 9 zone 편집기
 
 사용법:
-  dns_manager start   [--host 0.0.0.0] [--port 8100] [--shutdown-after 30m]
+  dns_manager start   [--host 0.0.0.0] [--port 8100] [--shutdown-after 10m]
   dns_manager stop                                     정지
                                                        백그라운드로 기동
   dns_manager restart [--host ...] [--port ...]        재기동 (인자 없으면 직전 값 사용)
@@ -46,7 +46,9 @@ root 로 동작합니다. 일반 계정으로 실행하면 sudo 로 자동 전�
 host/port 를 주지 않으면 설정 파일의 값을 씁니다(기본 0.0.0.0:8100).
 
 이 도구에는 인증이 없습니다. 서비스로 등록하지 않고, 작업하는 동안만 띄우는 것이 맞습니다.
-  --shutdown-after 30m   요청이 30분간 없으면 스스로 종료 (30m, 2h, 90s 형식)
+기본값으로 유휴 10분이 지나면 스스로 종료합니다. 화면 오른쪽 위 '⏻ 종료' 로 바로 내릴 수도 있습니다.
+  --shutdown-after 30m   유휴 기준을 바꾼다 (30m, 2h, 90s 형식)
+  --shutdown-after off   자동 종료를 끈다 (권하지 않음)
 USAGE
 }
 
@@ -123,6 +125,19 @@ health_url() {
   printf 'http://%s:%s/healthz' "${host}" "${port}"
 }
 
+# 서버가 실제로 쓰는 유휴 종료 값(분). 0 이면 꺼짐, 빈 값이면 알 수 없음.
+# 설정 파일·기본값·--shutdown-after 가 섞이므로 추측하지 않고 서버에 묻는다.
+idle_minutes() {
+  "${PYTHON}" - "$1" <<'IDLE'
+import json, sys, urllib.request
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=3) as response:
+        print(int(json.load(response)["shutdown_after_idle"]) // 60)
+except Exception:
+    pass
+IDLE
+}
+
 probe() {
   "${PYTHON}" - "$1" <<'PY' 2>/dev/null
 import sys, urllib.request
@@ -169,10 +184,14 @@ cmd_start() {
     if probe "${url}"; then
       echo "기동했습니다: ${HOST}:${PORT} (pid ${pid})"
       echo "  로그: ${LOG_FILE}"
-      if [[ -n "${SHUTDOWN_AFTER}" ]]; then
-        echo "  요청이 ${SHUTDOWN_AFTER} 동안 없으면 스스로 종료합니다."
+      local idle
+      idle="$(idle_minutes "${url%/healthz}/api/status" 2>/dev/null)"
+      if [[ -n "${idle}" && "${idle}" -gt 0 ]]; then
+        echo "  유휴 ${idle}분이 지나면 스스로 종료합니다 (화면에서 작업하면 연장)."
+        echo "  바로 내리려면 화면 오른쪽 위 '⏻ 종료' 또는 dns_manager stop."
       else
-        echo "  인증이 없는 도구입니다. 작업이 끝나면 dns_manager stop 으로 내리세요."
+        echo "  자동 종료가 꺼져 있습니다. 인증이 없는 도구이므로 작업이 끝나면"
+        echo "  dns_manager stop 으로 내려 주세요."
       fi
       return 0
     fi

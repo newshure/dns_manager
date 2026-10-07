@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -71,6 +72,38 @@ def _dump_failure(desc: str) -> None:
             print(f"       화면: {path}")
     except Exception as exc:  # noqa: BLE001 - 진단 출력이 점검을 막으면 안 된다
         print(f"       (상태를 남기지 못했습니다: {exc})")
+
+
+def select_row(page: Page, name: str) -> None:
+    """레코드 행을 고르고, 실제로 선택됐는지 확인한다.
+
+    표를 다시 그리는 중에 클릭이 들어가면 교체되는 DOM 을 때려 선택이 조용히
+    무시된다. 그 상태로 Delete 를 누르면 '직전에 고른 다른 레코드' 가 지워진다.
+    선택 표시(tr.selected)를 확인하고 넘어가야 뒤따르는 단정이 거짓말을 하지 않는다.
+    """
+    row = page.locator(f'table.grid tbody tr[data-record]:has-text("{name}")').first
+    row.click()
+    try:
+        expect(row).to_have_class(re.compile(r"\bselected\b"), timeout=3000)
+    except AssertionError:
+        # 다시 그리기와 겹쳤다면 한 번 더. 두 번째에도 안 되면 진짜 문제다.
+        page.locator(f'table.grid tbody tr[data-record]:has-text("{name}")').first.click()
+        expect(
+            page.locator(f'table.grid tbody tr[data-record]:has-text("{name}")').first
+        ).to_have_class(re.compile(r"\bselected\b"), timeout=3000)
+
+
+def expect_gone(page: Page, name: str, timeout: int = 10000) -> None:
+    """표에서 그 이름의 행이 사라질 때까지 기다린다.
+
+    실패했을 때 어느 레코드였는지 알 수 있어야 한다 — 같은 모양의 단정이 한 점검에
+    여럿 있으면 메시지만 보고는 범인을 못 고른다.
+    """
+    rows = page.locator(f'table.grid tbody tr:has-text("{name}")')
+    try:
+        expect(rows).to_have_count(0, timeout=timeout)
+    except AssertionError as exc:
+        raise AssertionError(f"{name} 행이 표에 남았다 ({rows.count()}건)") from exc
 
 
 def select_zone(page: Page, zone: str) -> None:
@@ -433,20 +466,20 @@ def run(page: Page, shots: Path | None) -> None:
         # 먼저 CNAME 정리
         alias_row = page.locator(f'table.grid tbody tr:has-text("{ALIAS}")')
         if alias_row.count():
-            alias_row.first.click()
+            select_row(page, ALIAS)
             page.click("#btn-delete-record")
             page.click('#modal-foot button[data-action="submit"]')
             expect(page.locator("#modal-overlay")).to_be_hidden(timeout=10000)
             # 모달이 닫혀도 목록 새로 고침은 아직 진행 중이다. 행이 사라지는 것을 보고 넘어간다.
-            expect(page.locator(f'table.grid tbody tr:has-text("{ALIAS}")')).to_have_count(0, timeout=10000)
+            expect_gone(page, ALIAS)
 
-        page.locator(f'table.grid tbody tr:has-text("{HOST}")').first.click()
+        select_row(page, HOST)
         expect(page.locator("#btn-delete-record")).to_be_enabled(timeout=5000)
         page.click("#btn-delete-record")
         expect(page.locator("#modal-title")).to_contain_text("삭제")
         page.click('#modal-foot button[data-action="submit"]')
         expect(page.locator("#modal-overlay")).to_be_hidden(timeout=10000)
-        expect(page.locator(f'table.grid tbody tr:has-text("{HOST}")')).to_have_count(0, timeout=5000)
+        expect_gone(page, HOST)
 
     check("레코드 삭제 (연결된 PTR 포함)", delete_with_ptr)
 
@@ -705,6 +738,44 @@ def run(page: Page, shots: Path | None) -> None:
             expect(page.locator('.badge.warn:text-is("비밀")').first).to_be_visible()
 
     check("Files — 키 파일 표시", files_tab_marks_secret_files)
+
+    def idle_badge_counts_down() -> None:
+        # 기본 10분. 배지가 보이고, 남은 시간을 서버에 되묻지 않아야 한다.
+        badge = page.locator("#idle-note")
+        expect(badge).to_be_visible(timeout=5000)
+        expect(badge).to_contain_text("자동 종료")
+        assert "유휴" in badge.inner_text() or "곧" in badge.inner_text()
+        # 남은 시간을 세는 타이머가 요청을 만들지 않는지 — 마우스를 움직여도 마찬가지
+        seen: list[str] = []
+        page.on("request", lambda req: seen.append(req.url))
+        page.mouse.move(400, 400)
+        page.mouse.move(700, 500)
+        page.wait_for_timeout(1500)
+        assert not seen, f"마우스 이동만으로 요청이 생겼다: {seen}"
+
+    check("유휴 자동 종료 배지 · 마우스 이동은 활동이 아님", idle_badge_counts_down)
+
+    def real_action_extends_idle() -> None:
+        # 새로 고침(실질적 액션)은 /api/status 를 부르고, 서버의 유휴 시계가 되돌아간다.
+        before = page.evaluate("fetch('/api/status').then(r => r.json()).then(j => j.idle_remaining)")
+        page.wait_for_timeout(2500)
+        page.click("#btn-refresh")
+        expect(page.locator("#server-state")).not_to_contain_text("상태 확인 중", timeout=5000)
+        after = page.evaluate("fetch('/api/status').then(r => r.json()).then(j => j.idle_remaining)")
+        assert after >= before - 1.5, f"액션 뒤에 유휴 시간이 더 줄었다: {before} -> {after}"
+
+    check("실질적 액션은 유휴 시간을 연장", real_action_extends_idle)
+
+    def shutdown_modal_can_be_cancelled() -> None:
+        # 실제로 내리면 뒤따르는 점검을 못 하므로 취소까지만 확인한다.
+        page.click("#btn-shutdown")
+        expect(page.locator("#modal-title")).to_contain_text("종료", timeout=5000)
+        expect(page.locator("#modal-body")).to_contain_text("dns_manager start")
+        page.click('#modal-foot button[data-action="close"]')
+        expect(page.locator("#modal-overlay")).to_be_hidden()
+        expect(page.locator("#gone")).to_be_hidden()
+
+    check("종료 버튼 — 확인 모달 · 취소", shutdown_modal_can_be_cancelled)
 
     def copyright_and_notice() -> None:
         expect(page.locator(".statusbar .copyright")).to_contain_text("© 2026 haedong")

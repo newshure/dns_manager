@@ -15,12 +15,23 @@
     <label class="chk"><input type="checkbox" id="advanced-view"> View ▸ Advanced</label>
     <button type="button" id="btn-refresh" title="새로 고침">⟳ Refresh</button>
     <button type="button" id="btn-lookup" title="실제 응답 확인 (dig)">Launch nslookup</button>
+    <button type="button" id="btn-shutdown" class="danger" title="작업을 마치고 서버를 내립니다">⏻ 종료</button>
   </nav>
   <span class="idle-note hidden" id="idle-note"></span>
   <div class="server-state" id="server-state">상태 확인 중…</div>
 </header>
 
 <div id="banner" class="banner hidden"></div>
+
+<!-- 종료한 뒤 남는 화면. 이 상태에서는 어떤 요청도 보내지 않는다. -->
+<div id="gone" class="gone hidden">
+  <div class="gone-card">
+    <h2>dns_manager 를 종료했습니다</h2>
+    <p>DNS 설정은 그대로 남아 있습니다. named 는 영향을 받지 않습니다.</p>
+    <p>다시 쓰려면 호스트에서 아래 명령으로 띄우세요.</p>
+    <pre class="block">dns_manager start</pre>
+  </div>
+</div>
 
 <main class="console">
   <!-- 좌: 콘솔 트리 -->

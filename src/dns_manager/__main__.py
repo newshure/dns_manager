@@ -27,7 +27,7 @@ def main(argv: list[str] | None = None) -> int:
         "--shutdown-after",
         default=None,
         metavar="시간",
-        help="요청이 없을 때 스스로 종료 (예: 30m, 2h, 90s). 인증이 없으므로 작업 후에는 내리는 것이 맞다",
+        help="요청이 없을 때 스스로 종료 (예: 30m, 2h, 90s, off). 기본 10분",
     )
     parser.add_argument(
         "--doctor",
@@ -60,7 +60,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if cfg.app.shutdown_after_idle > 0:
         print(
-            f"유휴 {cfg.app.shutdown_after_idle // 60}분이 지나면 스스로 종료합니다.",
+            f"유휴 {cfg.app.shutdown_after_idle // 60}분이 지나면 스스로 종료합니다. "
+            "(화면에서 작업하면 시간이 다시 채워집니다)",
+            flush=True,
+        )
+    else:
+        print(
+            "자동 종료가 꺼져 있습니다. 인증이 없는 도구이므로 작업이 끝나면 "
+            "직접 내려 주세요 (dns_manager stop).",
             flush=True,
         )
 

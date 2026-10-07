@@ -491,10 +491,29 @@ def test_status_reports_idle_shutdown(tmp_path, zones_dir):
         assert 0 < body["idle_remaining"] <= 1800
 
 
-def test_status_without_idle_shutdown(client: TestClient):
+def test_status_reports_the_idle_budget(client: TestClient):
+    """기본값은 10분. 인증이 없으니 켜 둔 채 잊는 쪽이 더 위험하다."""
     body = client.get("/api/status").json()
-    assert body["shutdown_after_idle"] == 0
-    assert body["idle_remaining"] is None
+    assert body["shutdown_after_idle"] == 600
+    assert 0 < body["idle_remaining"] <= 600
+
+
+def test_shutdown_endpoint_signals_this_process(client: TestClient, monkeypatch):
+    """화면의 종료 버튼은 자기 프로세스에 SIGTERM 을 보낸다.
+
+    실제로 신호를 보내면 테스트 러너가 죽으므로 호출만 확인한다.
+    """
+    import os
+    import signal
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    res = client.post("/api/shutdown")
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+    # BackgroundTask 는 응답을 내보낸 뒤에 돈다.
+    assert sent == [(os.getpid(), signal.SIGTERM)]
 
 
 def test_requests_reset_the_idle_clock(tmp_path, zones_dir):
