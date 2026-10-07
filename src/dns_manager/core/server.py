@@ -20,6 +20,9 @@ _SERIAL_RE = re.compile(r"^\s*serial:\s*(\d+)", re.MULTILINE)
 _TYPE_RE = re.compile(r"^\s*type:\s*(\S+)", re.MULTILINE)
 # rndc 는 "last loaded:" 로 내보낸다. 'loaded:' 만 찾으면 영영 못 맞춘다(조용히 None 이 된다).
 _LOADED_RE = re.compile(r"^\s*(?:last\s+)?loaded:\s*(.+)$", re.MULTILINE)
+# named 가 이 zone 을 동적으로 다루는지. named.conf 파싱보다 이쪽이 사실이다 —
+# allow-update 가 options 에 전역으로 걸려 있으면 zone 블록만 봐서는 알 수 없다.
+_DYNAMIC_RE = re.compile(r"^\s*dynamic:\s*(yes|no)\s*$", re.MULTILINE | re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -36,6 +39,8 @@ class ZoneStatus:
     serial: int | None = None
     zone_type: str | None = None
     loaded: str | None = None
+    # named 가 보는 동적 여부. 모르면 None (status 를 못 읽은 경우).
+    dynamic: bool | None = None
     raw: str = ""
 
     @property
@@ -51,6 +56,12 @@ class ZoneStatus:
             return parsedate_to_datetime(self.loaded)
         except (TypeError, ValueError):
             return None
+
+
+def _parse_dynamic(text: str) -> bool | None:
+    """zonestatus 출력에서 'dynamic: yes|no' 를 읽는다. 없으면 None."""
+    match = _DYNAMIC_RE.search(text)
+    return match.group(1).lower() == "yes" if match else None
 
 
 def _rndc_argv(cfg: BindConfig) -> list[str]:
@@ -93,6 +104,7 @@ def zone_status(cfg: BindConfig, zone: str, view: str | None = None) -> ZoneStat
         serial=int(serial_match.group(1)) if serial_match else None,
         zone_type=type_match.group(1) if type_match else None,
         loaded=loaded_match.group(1).strip() if loaded_match else None,
+        dynamic=_parse_dynamic(result.stdout),
         raw=result.stdout,
     )
 

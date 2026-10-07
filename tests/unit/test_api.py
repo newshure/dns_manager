@@ -461,6 +461,83 @@ def test_zone_file_changed_after_load_is_detected(tmp_path, zones_dir):
     assert service.file_changed_since_load(dynamic, status) is False
 
 
+def test_zonestatus_dynamic_is_parsed():
+    """named 가 말하는 동적 여부를 읽어야 한다. named.conf 파싱만으로는 틀린다."""
+    from dns_manager.core import server as server_mod
+
+    yes = server_mod._parse_dynamic(  # noqa: SLF001 - 파싱만 따로 본다
+        "name: z.local\nserial: 1\nlast loaded: Fri, 02 Oct 2026 00:28:01 GMT\ndynamic: yes\n"
+    )
+    assert yes is True
+    no = server_mod._parse_dynamic(
+        "name: z.local\nserial: 1\nlast loaded: Fri, 02 Oct 2026 00:28:01 GMT\ndynamic: no\n"
+    )
+    assert no is False
+    assert server_mod._parse_dynamic("name: z.local\nserial: 1\n") is None
+
+
+def test_dynamic_zone_detected_from_named_not_only_config(tmp_path):
+    """allow-update 가 zone 블록에 없어도 named 가 동적이라면 동적으로 다뤄야 한다.
+
+    실제로 겪은 증상의 원인이다. allow-update 가 options 에 전역으로 걸려 있으면
+    zone 블록만 봐서는 알 수 없는데, named 는 journal 을 쓰고 `rndc reload` 를
+    'dynamic zone' 으로 거절한다. 그 결과 파일 mtime 이 적재 시각보다 영원히 새것이 되어
+    "reload 가 필요합니다" 가 사라지지 않는다.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from dns_manager.core import server as server_mod
+    from dns_manager.core import service
+    from dns_manager.core.layout import ZoneEntry
+
+    zone_file = tmp_path / "z.zone"
+    zone_file.write_text("x", encoding="utf-8")
+    # zone 블록에는 allow-update 가 없다 → entry.dynamic 은 False
+    entry = ZoneEntry(name="z.local", zone_type="master", view=None, file=zone_file)
+    assert entry.dynamic is False
+
+    loaded_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    loaded = loaded_at.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    # named 가 동적이라고 한다 → 파일 mtime 비교를 하지 않는다
+    dyn = server_mod.ZoneStatus(name="z.local", available=True, serial=1, loaded=loaded, dynamic=True)
+    assert service.effective_dynamic(entry, dyn) is True
+    assert service.file_changed_since_load(entry, dyn) is False
+
+    # named 가 아니라고 하면 평소대로 잡는다
+    static = server_mod.ZoneStatus(name="z.local", available=True, serial=1, loaded=loaded, dynamic=False)
+    assert service.effective_dynamic(entry, static) is False
+    assert service.file_changed_since_load(entry, static) is True
+
+
+def test_leftover_journal_counts_as_dynamic(tmp_path):
+    """named 에 못 물어볼 때는 journal 존재가 근거다. .jnl 이 있으면 reload 가 거절된다."""
+    from dns_manager.core import service
+    from dns_manager.core.layout import ZoneEntry
+
+    zone_file = tmp_path / "z.zone"
+    zone_file.write_text("x", encoding="utf-8")
+    entry = ZoneEntry(name="z.local", zone_type="master", view=None, file=zone_file)
+    assert entry.has_journal is False
+    assert service.effective_dynamic(entry) is False
+
+    (tmp_path / "z.zone.jnl").write_text("j", encoding="utf-8")
+    assert entry.has_journal is True
+    assert service.effective_dynamic(entry) is True
+
+
+def test_reload_refused_as_dynamic_zone_explains_what_to_do():
+    """'dynamic zone' 거절은 reload 를 더 눌러도 안 된다 — 다음 행동을 알려줘야 한다."""
+    from dns_manager.core.apply import _reload_failure_hint  # noqa: SLF001
+
+    hint = _reload_failure_hint("rndc: 'reload' failed: dynamic zone")
+    assert "freeze" in hint and "thaw" in hint
+    assert "되돌렸습니다" in hint
+
+    plain = _reload_failure_hint("rndc: connection refused")
+    assert "freeze" not in plain
+
+
 def test_rndc_last_loaded_is_parsed():
     """'last loaded:' 를 'loaded:' 로만 찾으면 영영 None 이 된다(실제 버그였다)."""
     from dns_manager.core import server as server_mod

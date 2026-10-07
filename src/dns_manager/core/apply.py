@@ -166,6 +166,39 @@ def _history(cfg: Config) -> History:
     return History(Path(cfg.app.state_dir) / "history.sqlite3")
 
 
+def needs_freeze(cfg: Config, entry: ZoneEntry) -> bool:
+    """이 zone 의 파일을 고치려면 freeze 가 필요한가.
+
+    동적 zone 은 named 가 journal 을 진실로 삼는다. 그대로 파일을 고치면 `rndc reload` 가
+    'dynamic zone' 으로 거절되고 변경이 서비스되지 않는다. freeze 는 동적 갱신을 멈추고
+    journal 을 파일에 반영하므로, 그 상태에서 고치고 thaw 로 다시 읽히면 된다.
+    """
+    from . import service  # 순환 import 를 피해 호출 시점에 가져온다
+
+    try:
+        status = server_mod.zone_status(cfg.bind, entry.name, entry.view)
+    except CommandError:
+        status = None
+    return service.effective_dynamic(entry, status)
+
+
+def _reload_failure_hint(message: str) -> str:
+    """rndc reload 실패를 사람이 다음 행동을 고를 수 있는 말로 바꾼다.
+
+    'dynamic zone' 은 특히 헷갈린다 — 파일은 제대로 고쳐졌는데 named 가 거절한 것이고,
+    reload 를 몇 번 더 눌러도 결과는 같다. journal 을 쓰는 zone 이라는 뜻이다.
+    """
+    lowered = message.lower()
+    if "dynamic zone" in lowered:
+        return (
+            "rndc reload 가 실패해 이전 내용으로 되돌렸습니다. "
+            "이 zone 은 named 가 동적(journal)으로 다루므로 파일 직접 편집으로는 반영되지 않습니다. "
+            "TSIG 키를 Settings 에 등록해 동적 갱신으로 고치거나, "
+            "호스트에서 rndc freeze → 편집 → rndc thaw 순서로 진행하세요."
+        )
+    return "rndc reload 가 실패해 이전 내용으로 되돌렸습니다."
+
+
 def apply_zone_text(
     cfg: Config,
     entry: ZoneEntry,
@@ -175,6 +208,7 @@ def apply_zone_text(
     author: str | None = None,
     summary: str = "zone 파일 변경",
     bump_serial: bool = True,
+    freeze: bool = True,
 ) -> ApplyResult:
     """zone 파일 전체를 새 내용으로 교체한다 — 모든 zone 쓰기의 공통 경로.
 
@@ -191,6 +225,58 @@ def apply_zone_text(
     history = _history(cfg)
     lock_dir = Path(cfg.app.state_dir) / "locks"
 
+    # 동적 zone 이면 freeze 로 감싼다. 이 판단을 호출부에 맡기면 어딘가 한 곳이 빠지고,
+    # 그 경로만 조용히 반영되지 않는다 — 실제로 그렇게 깨졌다.
+    frozen = False
+    if freeze and needs_freeze(cfg, entry):
+        freeze_result = _rndc(cfg, "freeze", entry.name)
+        if not freeze_result.ok:
+            raise ApplyError(f"zone 을 freeze 하지 못했습니다: {freeze_result.message}")
+        frozen = True
+
+    result: ApplyResult | None = None
+    try:
+        result = _apply_zone_text_locked(
+            cfg,
+            entry,
+            new_text,
+            path=path,
+            history=history,
+            lock_dir=lock_dir,
+            expected_version=expected_version,
+            author=author,
+            summary=summary,
+            bump_serial=bump_serial,
+        )
+        return result
+    finally:
+        if frozen:
+            thaw = _rndc(cfg, "thaw", entry.name)
+            if not thaw.ok:
+                # thaw 실패는 동적 갱신이 멈춘 채로 남는다는 뜻이다. 반드시 알려야 하지만,
+                # 여기서 예외를 던지면 성공한 변경이 실패로 보인다. 결과에 붙인다.
+                warning = (
+                    f"경고: rndc thaw 에 실패했습니다 — {thaw.message}. "
+                    f"이 zone 의 동적 갱신이 멈춰 있습니다. 호스트에서 "
+                    f"rndc thaw {entry.name} 를 직접 실행하세요."
+                )
+                if result is not None:
+                    result.error = f"{result.error}\n{warning}" if result.error else warning
+
+
+def _apply_zone_text_locked(
+    cfg: Config,
+    entry: ZoneEntry,
+    new_text: str,
+    *,
+    path: Path,
+    history: History,
+    lock_dir: Path,
+    expected_version: str | None,
+    author: str | None,
+    summary: str,
+    bump_serial: bool,
+) -> ApplyResult:
     with zone_lock(lock_dir, entry.name, entry.view):
         current = zonefile.read_snapshot(path, entry.name)
 
@@ -294,7 +380,7 @@ def apply_zone_text(
                 diff=diff,
                 checks=[check],
                 reload=reload_result,
-                error="rndc reload 가 실패해 이전 내용으로 되돌렸습니다.",
+                error=_reload_failure_hint(reload_result.message),
             )
             result.change_id = history.record(
                 kind="zone",

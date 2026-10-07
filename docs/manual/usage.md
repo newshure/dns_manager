@@ -265,9 +265,18 @@ Conditional Forwarders 노드에서 두 가지를 모두 다룹니다.
 TSIG 키는 `named.conf`가 include하는 파일들에서 찾습니다.
 
 - 레코드 추가·수정·삭제 → 동적 갱신으로 적용
+- 키가 없거나 named가 그 키를 모르면 → `rndc freeze` → 파일 수정 → `rndc thaw`
+  (결과에 그렇게 처리했다는 설명이 붙습니다)
 - Raw 저장 → `rndc freeze` → 저장 → `rndc thaw`
 - 조회 시 적재 serial이 파일보다 앞서 있으면 `rndc sync`로 먼저 내려 씁니다
   (그러지 않으면 동적으로 넣은 레코드가 화면에 안 보입니다)
+
+### 동적 zone 판정은 named에게 묻습니다
+
+zone 블록의 `allow-update` 만 보면 틀립니다. `allow-update` 가 `options` 에 **전역으로**
+걸려 있거나 view에서 상속되면 zone 블록에는 아무 흔적이 없는데도 named는 그 zone을
+동적으로 다룹니다. 그래서 앱은 `rndc zonestatus` 의 `dynamic:` 과 journal(`.jnl`) 존재를
+먼저 보고, 그 다음에 `named.conf` 를 봅니다.
 
 ---
 
@@ -296,6 +305,27 @@ TSIG 키는 `named.conf`가 include하는 파일들에서 찾습니다.
 
 파일을 고치면서 serial을 올리지 않으면 serial 비교로는 아무 문제가 없어 보입니다.
 앱은 **파일 수정 시각과 적재 시각**을 함께 비교해 "파일 변경됨 — reload 필요" 로 알립니다.
+
+**"reload가 필요하다고 하는데, reload를 해도 사라지지 않는다"**
+
+그 zone은 동적(journal)일 가능성이 큽니다. 동적 zone에는 `rndc reload` 가 아예 거부됩니다.
+
+```
+rndc: 'reload' failed: dynamic zone
+```
+
+거부되면 적재 시각이 갱신되지 않고, named는 journal을 파일에 주기적으로 내려쓰므로
+파일 수정 시각이 적재 시각보다 늘 새것이 됩니다 — 경고가 영원히 남습니다.
+호스트에서 확인하세요.
+
+```bash
+rndc zonestatus <zone> | grep dynamic
+ls <zone 파일>.jnl
+```
+
+`dynamic: yes` 면 그 zone은 동적입니다. 앱은 이 경우를 동적으로 인식해 경고를 띄우지 않고,
+편집도 동적 갱신이나 `freeze` → 수정 → `thaw` 로 처리합니다. 손으로 고칠 때도 같은
+순서를 쓰세요 — `freeze` 없이 파일만 고치면 journal이 그 수정을 덮어씁니다.
 
 **"외부에서 질의가 안 된다"**
 
