@@ -98,13 +98,16 @@ def _summarize(cfg: Config, entry: ZoneEntry, *, with_status: bool = True) -> Zo
     loaded_serial: int | None = None
     changed_since_load = False
     loaded_at_text: str | None = None
+    # named 에 못 물어볼 때는 설정과 journal 만으로 판단한다.
+    is_dynamic = effective_dynamic(entry)
     if with_status:
         try:
             status = server_mod.zone_status(cfg.bind, entry.name, entry.view)
             loaded_serial = status.serial
             loaded_at_text = status.loaded
+            is_dynamic = effective_dynamic(entry, status)
             changed_since_load = file_changed_since_load(entry, status)
-            if entry.file is not None and sync_if_stale(cfg, entry, loaded_serial, file_serial):
+            if entry.file is not None and sync_if_stale(cfg, entry, loaded_serial, file_serial, dynamic=is_dynamic):
                 content = zonefile.load(entry.file, entry.name)
                 file_serial = content.serial
                 record_count = len(content.records)
@@ -123,7 +126,7 @@ def _summarize(cfg: Config, entry: ZoneEntry, *, with_status: bool = True) -> Zo
         file=str(entry.file) if entry.file else None,
         editable=entry.editable,
         signed=entry.is_signed,
-        dynamic=entry.dynamic,
+        dynamic=is_dynamic,
         file_serial=file_serial,
         loaded_serial=loaded_serial,
         record_count=record_count,
@@ -155,14 +158,32 @@ def find_zone(cfg: Config, name: str, view: str | None = None) -> ZoneEntry:
     return entry
 
 
+def effective_dynamic(entry: ZoneEntry, status: server_mod.ZoneStatus | None = None) -> bool:
+    """named 가 이 zone 을 동적으로 다루는가.
+
+    named.conf 의 zone 블록만 봐서는 틀린다. allow-update 가 options 에 전역으로
+    걸려 있거나, view 에서 상속되거나, 예전에 동적이었다가 journal 만 남은 zone 은
+    zone 블록에 아무 흔적이 없는데도 named 는 동적으로 취급한다.
+
+    이 구분을 틀리면 조용히 깨진다. 파일을 고치고 `rndc reload` 를 보내면 named 가
+    'dynamic zone' 으로 거절하고, 변경은 서비스되지 않는데 적재 시각은 그대로 남아
+    "reload 가 필요합니다" 가 영원히 사라지지 않는다.
+
+    그래서 순서를 둔다: named 가 말하는 사실(zonestatus) → journal 존재 → named.conf.
+    """
+    if status is not None and status.dynamic is not None:
+        return status.dynamic
+    return entry.dynamic or entry.has_journal
+
+
 def file_changed_since_load(entry: ZoneEntry, status: server_mod.ZoneStatus) -> bool:
     """zone 파일이 named 가 읽어들인 뒤에 바뀌었는가.
 
     "파일에는 있는데 응답은 NXDOMAIN" 의 가장 흔한 원인이다. serial 을 올리지 않고
     파일만 고치면 serial 비교로는 아무 문제가 없어 보이지만 named 는 옛 내용을 서비스한다.
-    동적 zone 은 named 자신이 파일을 쓰므로 이 비교가 의미 없다 — 제외한다.
+    동적 zone 은 named 자신이 파일을 쓰므로(dump-interval) 이 비교가 의미 없다 — 제외한다.
     """
-    if entry.file is None or entry.dynamic:
+    if entry.file is None or effective_dynamic(entry, status):
         return False
     loaded_at = status.loaded_at
     if loaded_at is None:
@@ -175,7 +196,14 @@ def file_changed_since_load(entry: ZoneEntry, status: server_mod.ZoneStatus) -> 
     return (mtime - loaded_at).total_seconds() > 1
 
 
-def sync_if_stale(cfg: Config, entry: ZoneEntry, loaded_serial: int | None, file_serial: int | None) -> bool:
+def sync_if_stale(
+    cfg: Config,
+    entry: ZoneEntry,
+    loaded_serial: int | None,
+    file_serial: int | None,
+    *,
+    dynamic: bool | None = None,
+) -> bool:
     """동적 zone 의 journal 을 파일에 반영한다.
 
     allow-update 가 걸린 zone 은 변경이 journal(.jnl)에 쌓이고 zone 파일은 뒤처진다.
@@ -183,7 +211,9 @@ def sync_if_stale(cfg: Config, entry: ZoneEntry, loaded_serial: int | None, file
     그래서 적재 serial 이 파일보다 앞서 있으면 `rndc sync` 로 먼저 내려 쓴다
     (Windows DNS Manager 의 'Update Server Data File' 에 대응).
     """
-    if not entry.dynamic or loaded_serial is None or file_serial is None:
+    if not (entry.dynamic if dynamic is None else dynamic):
+        return False
+    if loaded_serial is None or file_serial is None:
         return False
     if loaded_serial == file_serial:
         return False
@@ -211,7 +241,9 @@ def get_zone(cfg: Config, name: str, view: str | None = None) -> ZoneDetail:
         status = server_mod.ZoneStatus(name=entry.name, available=False, raw=str(exc))
 
     # 동적 zone 이 journal 때문에 뒤처져 있으면 반영한 뒤 다시 읽는다.
-    if content is not None and sync_if_stale(cfg, entry, status.serial, content.serial):
+    if content is not None and sync_if_stale(
+        cfg, entry, status.serial, content.serial, dynamic=effective_dynamic(entry, status)
+    ):
         try:
             content = zonefile.load(entry.file, entry.name)  # type: ignore[arg-type]
         except zonefile.ZoneReadError as exc:

@@ -87,6 +87,29 @@ def _settings_out(report: settings_mod.SettingsReport) -> SettingsOut:
     )
 
 
+@router.post("/shutdown")
+def shutdown(request: Request) -> dict[str, object]:
+    """화면에서 서버를 내린다.
+
+    인증이 없는 도구라 작업이 끝나면 내리는 것이 맞다. 호스트에 다시 들어가
+    명령을 치게 만들면 그냥 띄워 두게 된다 — 버튼 하나로 끝낼 수 있어야 한다.
+    """
+    import os
+    import signal
+
+    from starlette.background import BackgroundTask
+    from starlette.responses import JSONResponse
+
+    def stop() -> None:
+        # 응답을 내보낸 뒤에 신호를 보낸다. uvicorn 이 정상 종료 절차를 밟는다.
+        os.kill(os.getpid(), signal.SIGTERM)
+
+    return JSONResponse(
+        {"ok": True, "message": "종료합니다. 다시 쓰려면 호스트에서 dns_manager start 로 띄우세요."},
+        background=BackgroundTask(stop),
+    )
+
+
 @router.get("/files", response_model=FilesOut)
 def list_files(
     request: Request,

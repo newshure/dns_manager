@@ -18,7 +18,8 @@ import dns.reversename
 
 from ..config import Config
 from . import apply as apply_mod
-from . import dynamic, service, zoneedit, zonefile, zonetemplate
+from . import dynamic, server as server_mod, service, zoneedit, zonefile, zonetemplate
+from .commands import CommandError
 from .apply import ApplyError, ApplyResult
 from .layout import ZoneEntry
 from .records import Record
@@ -61,14 +62,29 @@ def _dynamic_outcome(entry: ZoneEntry, summary: str, rcode: str, note: str) -> E
     return EditOutcome(primary=result, notes=[note, f"서버 응답: {rcode}"])
 
 
+def is_dynamic_zone(cfg: Config, entry: ZoneEntry) -> bool:
+    """named 가 이 zone 을 동적으로 다루는가.
+
+    named.conf 의 zone 블록만 보면 안 된다 — service.effective_dynamic() 의 설명 참고.
+    틀리면 파일을 고친 뒤 보낸 `rndc reload` 가 'dynamic zone' 으로 거절되고,
+    변경이 서비스되지 않는데 화면에는 "reload 가 필요합니다" 만 남는다.
+    """
+    try:
+        status = server_mod.zone_status(cfg.bind, entry.name, entry.view)
+    except CommandError:
+        status = None
+    return service.effective_dynamic(entry, status)
+
+
 def uses_dynamic_update(cfg: Config, entry: ZoneEntry) -> bool:
     """이 zone 을 RFC 2136 으로 고쳐야 하는지.
 
-    allow-update 가 걸린 zone 은 named 가 journal 에 변경을 쌓는다. 파일을 직접 고치면
-    journal 과 어긋나므로 프로토콜로 고친다. 키를 못 찾으면 파일 경로로 돌아가되,
-    그때는 호출부가 journal 을 먼저 반영(rndc sync)해야 한다.
+    동적 zone 은 named 가 journal 에 변경을 쌓으므로 프로토콜로 고치는 것이 가장 깔끔하다.
+    키를 못 찾으면 파일 경로로 돌아간다 — 그 경로도 apply_zone_text 가 freeze/thaw 로
+    감싸므로 안전하다. 키가 있어도 named 가 거절할 수 있어서(서로 다른 키) 실제 전송
+    실패까지 본 뒤에 넘어간다.
     """
-    if not entry.dynamic:
+    if not is_dynamic_zone(cfg, entry):
         return False
     try:
         dynamic.load_key(cfg, entry)
@@ -174,6 +190,27 @@ def _delete_ptr(cfg: Config, address: str, target_fqdn: str, author: str | None)
 # --------------------------- 레코드 조작 ---------------------------
 
 
+# 동적 갱신을 보내 봤지만 못 보낸 경우에 붙이는 설명. 파일 경로로 넘어간다.
+_FALLBACK_NOTE = (
+    "동적 갱신(RFC 2136)을 보낼 수 없어 freeze → 파일 수정 → thaw 로 처리했습니다: {reason}"
+)
+
+
+def _try_dynamic(cfg: Config, entry: ZoneEntry, send) -> tuple[str | None, str | None]:
+    """동적 갱신을 시도한다.
+
+    키가 없거나 named 가 그 키를 모르면(서로 다른 키를 쓰는 서버가 흔하다) 여기서
+    멈추지 않고 파일 경로로 넘긴다. 예전에는 이 예외가 그대로 올라가 500 이 됐다.
+    파일 경로도 apply_zone_text 가 freeze/thaw 로 감싸므로 journal 과 어긋나지 않는다.
+    """
+    if not uses_dynamic_update(cfg, entry):
+        return None, None
+    try:
+        return send(), None
+    except dynamic.DynamicError as exc:
+        return None, _FALLBACK_NOTE.format(reason=exc)
+
+
 def add_record(
     cfg: Config,
     zone: str,
@@ -190,8 +227,10 @@ def add_record(
     entry = _entry(cfg, zone, view)
     record = zoneedit.normalize(name, rtype, data, entry.name)
 
-    if uses_dynamic_update(cfg, entry):
-        rcode = dynamic.add_record(cfg, entry, record.name, record.rtype, record.data, ttl or 3600)
+    rcode, fallback = _try_dynamic(
+        cfg, entry, lambda: dynamic.add_record(cfg, entry, record.name, record.rtype, record.data, ttl or 3600)
+    )
+    if rcode is not None:
         outcome = _dynamic_outcome(
             entry,
             f"{record.rtype} 추가: {record.name} {record.data}",
@@ -223,7 +262,7 @@ def add_record(
         summary=f"{record.rtype} 추가: {record.name} {record.data}",
     )
 
-    outcome = EditOutcome(primary=result)
+    outcome = EditOutcome(primary=result, notes=[fallback] if fallback else [])
     if result.ok and create_ptr and record.rtype in PTR_CAPABLE:
         ptr_result, note = _add_ptr(cfg, record.data, record.fqdn, author)
         if ptr_result is not None:
@@ -251,13 +290,17 @@ def update_record(
     target = zoneedit.find(zoneedit.index_records(text, entry.name), record_id)
     record = zoneedit.normalize(name, rtype, data, entry.name)
 
-    if uses_dynamic_update(cfg, entry):
+    def _send_update() -> str:
         # 이름·타입이 그대로면 교체, 바뀌었으면 지우고 더한다.
         if target.record.name == record.name and target.record.rtype == record.rtype:
-            rcode = dynamic.replace_record(cfg, entry, record.name, record.rtype, record.data, ttl or target.record.ttl)
-        else:
-            dynamic.delete_record(cfg, entry, target.record.name, target.record.rtype, target.record.data)
-            rcode = dynamic.add_record(cfg, entry, record.name, record.rtype, record.data, ttl or target.record.ttl)
+            return dynamic.replace_record(
+                cfg, entry, record.name, record.rtype, record.data, ttl or target.record.ttl
+            )
+        dynamic.delete_record(cfg, entry, target.record.name, target.record.rtype, target.record.data)
+        return dynamic.add_record(cfg, entry, record.name, record.rtype, record.data, ttl or target.record.ttl)
+
+    rcode, fallback = _try_dynamic(cfg, entry, _send_update)
+    if rcode is not None:
         return _dynamic_outcome(
             entry,
             f"{target.record.rtype} 수정: {target.record.name} → {record.name} {record.data}",
@@ -277,7 +320,7 @@ def update_record(
             f" → {record.name} {record.data}"
         ),
     )
-    return EditOutcome(primary=result)
+    return EditOutcome(primary=result, notes=[fallback] if fallback else [])
 
 
 def delete_records(
@@ -295,14 +338,18 @@ def delete_records(
     locations = zoneedit.index_records(text, entry.name)
     targets = [zoneedit.find(locations, rid) for rid in record_ids]
 
-    if uses_dynamic_update(cfg, entry):
-        rcode = "NOERROR"
+    def _send_deletes() -> str:
+        code = "NOERROR"
         for target in targets:
             if target.record.rtype == "SOA":
                 raise ApplyError("SOA 레코드는 삭제할 수 없습니다.")
-            rcode = dynamic.delete_record(
+            code = dynamic.delete_record(
                 cfg, entry, target.record.name, target.record.rtype, target.record.data
             )
+        return code
+
+    rcode, fallback = _try_dynamic(cfg, entry, _send_deletes)
+    if rcode is not None:
         outcome = _dynamic_outcome(
             entry,
             "레코드 삭제: " + ", ".join(f"{t.record.name} {t.record.rtype}" for t in targets),
@@ -331,7 +378,7 @@ def delete_records(
         summary=summary,
     )
 
-    outcome = EditOutcome(primary=result)
+    outcome = EditOutcome(primary=result, notes=[fallback] if fallback else [])
     if result.ok and delete_ptr:
         for target in targets:
             if target.record.rtype not in PTR_CAPABLE:
@@ -358,52 +405,18 @@ def save_raw(
     """raw 저장. 동적 zone 은 freeze → 저장 → thaw 로 journal 과의 충돌을 피한다."""
     entry = _entry(cfg, zone, view)
 
-    if entry.dynamic and freeze:
-        return _save_raw_frozen(cfg, entry, text, expected_version, author, bump_serial)
-
+    frozen = freeze and apply_mod.needs_freeze(cfg, entry)
     result = apply_mod.apply_zone_text(
         cfg,
         entry,
         text,
         expected_version=expected_version,
         author=author,
-        summary="raw zone 파일 저장",
+        summary="raw zone 파일 저장 (freeze/thaw)" if frozen else "raw zone 파일 저장",
         bump_serial=bump_serial,
+        freeze=freeze,
     )
-    return EditOutcome(primary=result)
-
-
-def _save_raw_frozen(
-    cfg: Config,
-    entry: ZoneEntry,
-    text: str,
-    expected_version: str | None,
-    author: str | None,
-    bump_serial: bool,
-) -> EditOutcome:
-    """동적 zone 의 파일을 안전하게 바꾼다.
-
-    `rndc freeze` 는 동적 갱신을 멈추고 journal 을 파일에 반영한다. 그 상태에서 파일을 고치고
-    `rndc thaw` 로 다시 읽힌다. 이 절차 없이 파일을 고치면 journal 이 변경을 덮어쓴다.
-    """
-    freeze = apply_mod._rndc(cfg, "freeze", entry.name)  # noqa: SLF001 - 같은 패키지
-    if not freeze.ok:
-        raise ApplyError(f"zone 을 freeze 하지 못했습니다: {freeze.message}")
-    try:
-        result = apply_mod.apply_zone_text(
-            cfg,
-            entry,
-            text,
-            expected_version=expected_version,
-            author=author,
-            summary="raw zone 파일 저장 (freeze/thaw)",
-            bump_serial=bump_serial,
-        )
-    finally:
-        thaw = apply_mod._rndc(cfg, "thaw", entry.name)  # noqa: SLF001
-    notes = ["동적 zone 이라 freeze → 저장 → thaw 순서로 적용했습니다."]
-    if not thaw.ok:
-        notes.append(f"경고: thaw 에 실패했습니다 — {thaw.message}. 동적 갱신이 멈춰 있습니다.")
+    notes = ["동적 zone 이라 freeze → 저장 → thaw 순서로 적용했습니다."] if frozen else []
     return EditOutcome(primary=result, notes=notes)
 
 

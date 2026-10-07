@@ -186,6 +186,8 @@ class ServerStatusOut(BaseModel):
     server_forwarders: list[str] = Field(default_factory=list)
     server_forward_policy: str | None = None
     advanced_view_default: bool = False
+    shutdown_after_idle: int = Field(default=0, description="유휴 자동 종료(초). 0 이면 쓰지 않음")
+    idle_remaining: int | None = Field(default=None, description="자동 종료까지 남은 초")
     config_source: str | None = None
 
 

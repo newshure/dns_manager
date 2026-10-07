@@ -139,6 +139,34 @@ echo "--- 재기동 (restart)"
 "$APP/dns_manager" restart
 "$APP/dns_manager" status
 
+echo "--- 유휴 자동 종료 기본값 (10분)"
+IDLE="$("$APP/.venv/bin/python" -c "
+import json, urllib.request
+with urllib.request.urlopen(\"http://127.0.0.1:8100/api/status\", timeout=5) as r:
+    print(json.load(r)[\"shutdown_after_idle\"])
+")"
+[ "$IDLE" = "600" ] \
+  && echo "    기본 600초 적용" \
+  || { echo "유휴 기본값이 600 이 아니다: $IDLE"; exit 1; }
+
+echo "--- 화면의 종료 버튼 (POST /api/shutdown)"
+"$APP/.venv/bin/python" - <<PYDOWN
+import json, urllib.request
+req = urllib.request.Request("http://127.0.0.1:8100/api/shutdown", method="POST")
+with urllib.request.urlopen(req, timeout=10) as r:
+    assert json.loads(r.read())["ok"], "종료 응답이 ok 가 아니다"
+PYDOWN
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  "$APP/dns_manager" status >/dev/null 2>&1 || break
+  sleep 1
+done
+"$APP/dns_manager" status >/dev/null 2>&1 \
+  && { echo "종료 요청 뒤에도 살아 있다"; exit 1; } \
+  || echo "    종료 확인"
+
+echo "--- 다시 기동 (정지 명령 확인용)"
+"$APP/dns_manager" start --host 0.0.0.0 --port 8100 >/dev/null
+
 echo "--- 정지 (stop)"
 "$APP/dns_manager" stop
 "$APP/dns_manager" status && { echo "정지 후에도 실행 중으로 나온다"; exit 1; } || echo "    정지 확인"

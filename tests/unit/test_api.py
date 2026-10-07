@@ -461,6 +461,83 @@ def test_zone_file_changed_after_load_is_detected(tmp_path, zones_dir):
     assert service.file_changed_since_load(dynamic, status) is False
 
 
+def test_zonestatus_dynamic_is_parsed():
+    """named 가 말하는 동적 여부를 읽어야 한다. named.conf 파싱만으로는 틀린다."""
+    from dns_manager.core import server as server_mod
+
+    yes = server_mod._parse_dynamic(  # noqa: SLF001 - 파싱만 따로 본다
+        "name: z.local\nserial: 1\nlast loaded: Fri, 02 Oct 2026 00:28:01 GMT\ndynamic: yes\n"
+    )
+    assert yes is True
+    no = server_mod._parse_dynamic(
+        "name: z.local\nserial: 1\nlast loaded: Fri, 02 Oct 2026 00:28:01 GMT\ndynamic: no\n"
+    )
+    assert no is False
+    assert server_mod._parse_dynamic("name: z.local\nserial: 1\n") is None
+
+
+def test_dynamic_zone_detected_from_named_not_only_config(tmp_path):
+    """allow-update 가 zone 블록에 없어도 named 가 동적이라면 동적으로 다뤄야 한다.
+
+    실제로 겪은 증상의 원인이다. allow-update 가 options 에 전역으로 걸려 있으면
+    zone 블록만 봐서는 알 수 없는데, named 는 journal 을 쓰고 `rndc reload` 를
+    'dynamic zone' 으로 거절한다. 그 결과 파일 mtime 이 적재 시각보다 영원히 새것이 되어
+    "reload 가 필요합니다" 가 사라지지 않는다.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from dns_manager.core import server as server_mod
+    from dns_manager.core import service
+    from dns_manager.core.layout import ZoneEntry
+
+    zone_file = tmp_path / "z.zone"
+    zone_file.write_text("x", encoding="utf-8")
+    # zone 블록에는 allow-update 가 없다 → entry.dynamic 은 False
+    entry = ZoneEntry(name="z.local", zone_type="master", view=None, file=zone_file)
+    assert entry.dynamic is False
+
+    loaded_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    loaded = loaded_at.strftime("%a, %d %b %Y %H:%M:%S GMT")
+
+    # named 가 동적이라고 한다 → 파일 mtime 비교를 하지 않는다
+    dyn = server_mod.ZoneStatus(name="z.local", available=True, serial=1, loaded=loaded, dynamic=True)
+    assert service.effective_dynamic(entry, dyn) is True
+    assert service.file_changed_since_load(entry, dyn) is False
+
+    # named 가 아니라고 하면 평소대로 잡는다
+    static = server_mod.ZoneStatus(name="z.local", available=True, serial=1, loaded=loaded, dynamic=False)
+    assert service.effective_dynamic(entry, static) is False
+    assert service.file_changed_since_load(entry, static) is True
+
+
+def test_leftover_journal_counts_as_dynamic(tmp_path):
+    """named 에 못 물어볼 때는 journal 존재가 근거다. .jnl 이 있으면 reload 가 거절된다."""
+    from dns_manager.core import service
+    from dns_manager.core.layout import ZoneEntry
+
+    zone_file = tmp_path / "z.zone"
+    zone_file.write_text("x", encoding="utf-8")
+    entry = ZoneEntry(name="z.local", zone_type="master", view=None, file=zone_file)
+    assert entry.has_journal is False
+    assert service.effective_dynamic(entry) is False
+
+    (tmp_path / "z.zone.jnl").write_text("j", encoding="utf-8")
+    assert entry.has_journal is True
+    assert service.effective_dynamic(entry) is True
+
+
+def test_reload_refused_as_dynamic_zone_explains_what_to_do():
+    """'dynamic zone' 거절은 reload 를 더 눌러도 안 된다 — 다음 행동을 알려줘야 한다."""
+    from dns_manager.core.apply import _reload_failure_hint  # noqa: SLF001
+
+    hint = _reload_failure_hint("rndc: 'reload' failed: dynamic zone")
+    assert "freeze" in hint and "thaw" in hint
+    assert "되돌렸습니다" in hint
+
+    plain = _reload_failure_hint("rndc: connection refused")
+    assert "freeze" not in plain
+
+
 def test_rndc_last_loaded_is_parsed():
     """'last loaded:' 를 'loaded:' 로만 찾으면 영영 None 이 된다(실제 버그였다)."""
     from dns_manager.core import server as server_mod
@@ -471,3 +548,96 @@ def test_rndc_last_loaded_is_parsed():
     )
     match = server_mod._LOADED_RE.search(output)
     assert match and "Fri, 02 Oct 2026" in match.group(1)
+
+
+def test_status_reports_idle_shutdown(tmp_path, zones_dir):
+    """자동 종료가 켜져 있으면 남은 시간을 알려 준다(화면에 띄우기 위해)."""
+    from fastapi.testclient import TestClient
+
+    from dns_manager.api.app import create_app
+    from dns_manager.config import AppConfig, BindConfig, Config
+
+    cfg = Config(
+        bind=BindConfig(named_conf=tmp_path / "named.conf"),
+        app=AppConfig(state_dir=tmp_path, backup_dir=tmp_path, shutdown_after_idle=1800),
+    )
+    with TestClient(create_app(cfg)) as client:
+        body = client.get("/api/status").json()
+        assert body["shutdown_after_idle"] == 1800
+        assert body["idle_remaining"] is not None
+        assert 0 < body["idle_remaining"] <= 1800
+
+
+def test_status_reports_the_idle_budget(client: TestClient):
+    """기본값은 10분. 인증이 없으니 켜 둔 채 잊는 쪽이 더 위험하다."""
+    body = client.get("/api/status").json()
+    assert body["shutdown_after_idle"] == 600
+    assert 0 < body["idle_remaining"] <= 600
+
+
+def test_shutdown_endpoint_signals_this_process(client: TestClient, monkeypatch):
+    """화면의 종료 버튼은 자기 프로세스에 SIGTERM 을 보낸다.
+
+    실제로 신호를 보내면 테스트 러너가 죽으므로 호출만 확인한다.
+    """
+    import os
+    import signal
+
+    sent: list[tuple[int, int]] = []
+    monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)))
+
+    res = client.post("/api/shutdown")
+    assert res.status_code == 200
+    assert res.json()["ok"] is True
+    # BackgroundTask 는 응답을 내보낸 뒤에 돈다.
+    assert sent == [(os.getpid(), signal.SIGTERM)]
+
+
+def test_requests_reset_the_idle_clock(tmp_path, zones_dir):
+    """요청이 오면 유휴 시계가 되돌아가야 한다. 작업 중에 종료되면 안 된다."""
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from dns_manager.api.app import create_app
+    from dns_manager.config import AppConfig, BindConfig, Config
+
+    cfg = Config(
+        bind=BindConfig(named_conf=tmp_path / "named.conf"),
+        app=AppConfig(state_dir=tmp_path, backup_dir=tmp_path, shutdown_after_idle=60),
+    )
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        client.get("/api/status")
+        first = app.state.idle.idle_seconds
+        time.sleep(0.05)
+        assert app.state.idle.idle_seconds > first
+        client.get("/api/status")
+        assert app.state.idle.idle_seconds < first + 0.05
+
+
+def test_healthz_does_not_reset_idle_clock(tmp_path, zones_dir):
+    """살아 있는지 묻는 것은 작업이 아니다.
+
+    이것까지 활동으로 세면 상태 확인 루프가 자동 종료를 영원히 막는다(실제로 겪었다).
+    """
+    import time
+
+    from fastapi.testclient import TestClient
+
+    from dns_manager.api.app import create_app
+    from dns_manager.config import AppConfig, BindConfig, Config
+
+    cfg = Config(
+        bind=BindConfig(named_conf=tmp_path / "named.conf"),
+        app=AppConfig(state_dir=tmp_path, backup_dir=tmp_path, shutdown_after_idle=60),
+    )
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        time.sleep(0.05)
+        before = app.state.idle.idle_seconds
+        client.get("/healthz")
+        assert app.state.idle.idle_seconds >= before, "healthz 는 시계를 되돌리면 안 된다"
+
+        client.get("/api/status")
+        assert app.state.idle.idle_seconds < before, "실제 작업은 시계를 되돌려야 한다"

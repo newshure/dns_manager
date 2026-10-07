@@ -706,7 +706,24 @@ function detailError(message) {
   el("detail-actions").innerHTML = "";
 }
 
+// 입력 행에 타이핑한 내용은 DOM 에만 있다. 뒤늦게 끝난 refresh() 가 표를 다시 그리면
+// 그대로 날아가고, 사용자는 빈 값을 보낸 셈이 된다("zone 이름을 입력하세요"). 다시 그리기
+// 직전에 화면의 값을 상태로 거둬 둔다. 입력칸이 없을 때는 손대지 않는다 — 없는 값을
+// 읽어 빈 문자열로 덮으면 같은 문제를 반대로 만든다.
+function keepDraftInput() {
+  if (state.draft && el("draft-data")) state.draft = readDraft();
+  if (state.zoneDraft && el("zdraft-name")) state.zoneDraft = readZoneDraft();
+  if (state.fwdDraft && el("fdraft-domain")) {
+    state.fwdDraft = {
+      domain: el("fdraft-domain")?.value.trim() ?? "",
+      ips: el("fdraft-ips")?.value ?? "",
+      policy: el("fdraft-policy")?.value ?? "only",
+    };
+  }
+}
+
 function drawDetail() {
+  keepDraftInput();
   const sel = state.selection;
   renderTabs();
 
@@ -824,6 +841,15 @@ async function refresh() {
     state.status = status;
     state.zones = zones;
     state.forwarders = forwarders;
+
+    // 자동 종료가 켜져 있으면 남은 시간을 보여 준다. 작업 중에 갑자기 끊기면 당황스럽다.
+    // 이 응답을 받은 시점이 곧 서버가 본 마지막 활동이므로, 기한을 여기서 다시 잡는다.
+    if (status.shutdown_after_idle > 0 && status.idle_remaining !== null) {
+      idleDeadline = Date.now() + status.idle_remaining * 1000;
+    } else {
+      idleDeadline = null;
+    }
+    drawIdleNote();
 
     el("server-state").innerHTML = status.running
       ? `<span class="up">named 실행 중</span> · ${esc(status.version ?? "")} · ${status.zone_count} zones`
@@ -1143,6 +1169,64 @@ el("modal-foot").addEventListener("click", (ev) => {
 el("modal-form").addEventListener("submit", async (ev) => {
   ev.preventDefault();
   if (modalSubmit) await modalSubmit(new FormData(ev.target));
+});
+
+/* 유휴 자동 종료 표시 · 수동 종료 */
+
+// 서버가 세는 유휴 시간의 기한. refresh() 가 올 때마다 다시 잡는다.
+let idleDeadline = null;
+let shutdownDone = false;
+
+// 남은 시간은 화면에서만 센다. 1분마다 서버에 물어보면 그 요청 자체가 활동으로
+// 집계되어 자동 종료가 영원히 오지 않는다 — 요청을 보내지 않는 것이 핵심이다.
+function drawIdleNote() {
+  const node = el("idle-note");
+  if (shutdownDone || idleDeadline === null) {
+    node.classList.add("hidden");
+    return;
+  }
+  const left = Math.max(0, idleDeadline - Date.now()) / 1000;
+  const minutes = Math.ceil(left / 60);
+  node.textContent = left <= 60 ? "곧 자동 종료" : `유휴 ${minutes}분 후 자동 종료`;
+  node.classList.toggle("soon", left <= 120);
+  node.classList.remove("hidden");
+  node.title =
+    "인증이 없는 도구라 작업 시간 동안만 띄우는 것이 전제입니다. " +
+    "화면에서 무언가 하면(이동·추가·삭제·새로 고침) 시간이 다시 채워집니다. " +
+    "마우스만 움직이는 것은 세지 않습니다.";
+}
+
+setInterval(drawIdleNote, 15000);
+
+function showGone() {
+  shutdownDone = true;
+  idleDeadline = null;
+  closeModal();
+  banner("");
+  el("gone").classList.remove("hidden");
+}
+
+el("btn-shutdown").addEventListener("click", () => {
+  openModal({
+    title: "dns_manager 종료",
+    body:
+      `<p class="muted">작업을 마치고 이 도구를 내립니다. named 와 DNS 설정은 그대로 둡니다.</p>` +
+      `<p class="muted">다시 쓰려면 호스트에서 <code>dns_manager start</code> 로 띄우세요.</p>`,
+    buttons: [
+      { label: "취소", action: "close" },
+      { label: "종료", primary: true, submit: true },
+    ],
+    onSubmit: async () => {
+      try {
+        await send("/api/shutdown", "POST");
+      } catch (err) {
+        // 응답을 못 받는 것이 정상일 수도 있다(종료가 먼저 끝난 경우).
+        // 실제로 못 내려갔는지 확인할 방법은 다음 요청뿐인데, 그 요청이
+        // 유휴 시계를 되살린다. 여기서는 종료된 것으로 본다.
+      }
+      showGone();
+    },
+  });
 });
 
 /* nslookup (dig) — Windows DNS Manager 의 Launch nslookup 대응 */

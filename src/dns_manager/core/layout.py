@@ -74,10 +74,30 @@ class ZoneEntry:
 
     @property
     def dynamic(self) -> bool:
-        """동적 갱신이 허용된 zone. journal 때문에 파일 직접 편집이 위험하다."""
+        """named.conf 가 말하는 동적 갱신 허용 여부.
+
+        이것만 믿으면 안 된다. allow-update 가 options 에 전역으로 걸린 경우,
+        view 안에서 상속된 경우, 예전에 동적이었다가 journal 만 남은 경우 모두
+        여기서는 False 로 보이지만 named 는 그 zone 을 동적으로 다룬다.
+        판단이 필요한 곳에서는 service.effective_dynamic() 을 쓴다.
+        """
         if self.update_policy:
             return True
         return bool(self.allow_update) and tuple(self.allow_update) != ("none",)
+
+    @property
+    def has_journal(self) -> bool:
+        """zone journal(.jnl)이 있는가.
+
+        journal 이 있으면 named 는 파일 대신 journal 을 진실로 삼고, `rndc reload` 를
+        'dynamic zone' 으로 거절한다. 파일을 직접 고쳐도 반영되지 않는다.
+        """
+        if self.file is None:
+            return False
+        try:
+            return self.file.with_name(self.file.name + ".jnl").is_file()
+        except OSError:
+            return False
 
     @property
     def editable(self) -> bool:
